@@ -29,11 +29,13 @@ class _MarkerTweenState {
   double currentRot;
   int startMs;
   bool animating;
+  String suffix;
   BitmapDescriptor icon;
 
   _MarkerTweenState({
     required this.currentPos,
     required this.currentRot,
+    required this.suffix,
     required this.icon,
   })  : startPos = currentPos,
         endPos = currentPos,
@@ -89,6 +91,7 @@ class _MapScreenState extends State<MapScreen>
 
     _uiTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
+      _refreshMarkerIconsIfSuffixChanged();
       if (_selectedDeviceId != 0 &&
           _showBottomSheet &&
           _service.positions.containsKey(_selectedDeviceId)) {
@@ -199,20 +202,20 @@ class _MapScreenState extends State<MapScreen>
       }
 
       final suffix = markerSuffixFor(device, pos);
-      final icon = await MarkerIconCache.instance.getMarkerIcon(
-        category: device.category,
-        suffix: suffix,
-      );
-      if (!mounted) return;
-
       final location = LatLng(pos.latitude, pos.longitude);
       final existing = _markerStates[deviceId];
       final course = _resolveCourse(pos, existing?.currentRot);
 
       if (existing == null) {
+        final icon = await MarkerIconCache.instance.getMarkerIcon(
+          category: device.category,
+          suffix: suffix,
+        );
+        if (!mounted) return;
         _markerStates[deviceId] = _MarkerTweenState(
           currentPos: location,
           currentRot: course,
+          suffix: suffix,
           icon: icon,
         );
         if (_track &&
@@ -221,7 +224,15 @@ class _MapScreenState extends State<MapScreen>
           _moveCameraToDevice(deviceId);
         }
       } else {
-        existing.icon = icon;
+        if (existing.suffix != suffix) {
+          final icon = await MarkerIconCache.instance.getMarkerIcon(
+            category: device.category,
+            suffix: suffix,
+          );
+          if (!mounted) return;
+          existing.suffix = suffix;
+          existing.icon = icon;
+        }
         final moved =
             (existing.endPos.latitude - location.latitude).abs() > 1e-6 ||
                 (existing.endPos.longitude - location.longitude).abs() > 1e-6 ||
@@ -256,6 +267,31 @@ class _MapScreenState extends State<MapScreen>
     }
 
     if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _refreshMarkerIconsIfSuffixChanged() async {
+    var updated = false;
+    for (final entry in _markerStates.entries) {
+      final deviceId = entry.key;
+      final state = entry.value;
+      final device = _service.devices[deviceId];
+      final pos = _service.positions[deviceId];
+      if (device == null || pos == null) continue;
+      final nextSuffix = markerSuffixFor(device, pos);
+      if (nextSuffix != state.suffix) {
+        final icon = await MarkerIconCache.instance.getMarkerIcon(
+          category: device.category,
+          suffix: nextSuffix,
+        );
+        if (!mounted) return;
+        state.suffix = nextSuffix;
+        state.icon = icon;
+        updated = true;
+      }
+    }
+    if (updated && mounted) {
       setState(() {});
     }
   }
