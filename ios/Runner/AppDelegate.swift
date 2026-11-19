@@ -10,7 +10,7 @@ import UIKit
   ) -> Bool {
     let mapsApiKey =
       (Bundle.main.object(forInfoDictionaryKey: "GMSApiKey") as? String)
-      ?? "AIzaSyBf-GnDwUSfsE_qTGkb1wVZK6JxYgm-dMs"
+      ?? "AIzaSyBlI-MZL2DHLDl7Tjj-nMiBEVy0bA5CTfE"
     GMSServices.provideAPIKey(mapsApiKey)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }

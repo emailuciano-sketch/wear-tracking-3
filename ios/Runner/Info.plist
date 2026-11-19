@@ -25,7 +25,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>GMSApiKey</key>
-	<string>AIzaSyBf-GnDwUSfsE_qTGkb1wVZK6JxYgm-dMs</string>
+	<string>AIzaSyBlI-MZL2DHLDl7Tjj-nMiBEVy0bA5CTfE</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationQueriesSchemes</key>
