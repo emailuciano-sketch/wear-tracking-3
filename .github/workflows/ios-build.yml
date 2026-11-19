@@ -1,0 +1,46 @@
+name: Build iOS App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-ios:
+    name: Build Wear-Tracking 3 for iOS (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze & Test
+        run: |
+          flutter analyze
+          flutter test
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install
+
+      - name: Build iOS Release (.app / unsigned .ipa)
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -qry Wear-Tracking-3-unsigned.ipa Payload
+
+      - name: Upload iOS Artifact (.ipa)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wear-Tracking-3-iOS-IPA
+          path: Wear-Tracking-3-unsigned.ipa
