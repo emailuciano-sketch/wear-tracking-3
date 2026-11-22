@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/traccar_models.dart';
@@ -45,7 +46,12 @@ class TraccarService extends ChangeNotifier {
   Timer? _reconnectTimer;
   Timer? _watchdogTimer;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
+  StreamSubscription<dynamic>? _androidNetworkSub;
   String? _lastConnectivityKey;
+  int _connectSeq = 0;
+
+  static const EventChannel _androidNetworkChannel =
+      EventChannel('com.wear.tracking.v3/network');
 
   final StreamController<void> _updateController =
       StreamController<void>.broadcast();
@@ -416,6 +422,20 @@ class TraccarService extends ChangeNotifier {
       },
     );
 
+    _androidNetworkSub?.cancel();
+    if (Platform.isAndroid) {
+      _androidNetworkSub =
+          _androidNetworkChannel.receiveBroadcastStream().listen(
+        (dynamic event) {
+          if (event is String &&
+              (event.startsWith('available:') || event.startsWith('lost:'))) {
+            handleNetworkSwitch();
+          }
+        },
+        onError: (_) {},
+      );
+    }
+
     _watchdogTimer?.cancel();
     _watchdogTimer = Timer.periodic(
       const Duration(seconds: 15),
@@ -434,17 +454,21 @@ class TraccarService extends ChangeNotifier {
 
   void stopRealtimeSync() {
     _isSyncActive = false;
+    _connectSeq++;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
     _connectivitySub?.cancel();
     _connectivitySub = null;
+    _androidNetworkSub?.cancel();
+    _androidNetworkSub = null;
     _closeWebSocket();
   }
 
   void handleNetworkSwitch() {
     if (!_isSyncActive) return;
+    _connectSeq++;
     evictConnections();
     _closeWebSocket();
     _isFetchingPositions = false;
@@ -469,10 +493,17 @@ class TraccarService extends ChangeNotifier {
 
   Future<void> _connectWebSocket() async {
     if (!_isSyncActive) return;
+    final attemptId = ++_connectSeq;
     _closeWebSocket();
 
     try {
       await fetchLatestPositions();
+      if (!_isSyncActive || attemptId != _connectSeq) return;
+      if (_lastFetchFailed) {
+        _scheduleReconnect(const Duration(seconds: 2));
+        return;
+      }
+
       final cookie = _cookieHeader;
       final base = Uri.parse(serverUrl);
       final wsScheme = base.scheme == 'https' ? 'wss' : 'ws';
@@ -488,7 +519,7 @@ class TraccarService extends ChangeNotifier {
 
       final ws = await WebSocket.connect(wsUri.toString(), headers: headers)
           .timeout(const Duration(seconds: 10));
-      if (!_isSyncActive) {
+      if (!_isSyncActive || attemptId != _connectSeq) {
         await ws.close();
         return;
       }
@@ -517,10 +548,22 @@ class TraccarService extends ChangeNotifier {
       );
     } on UnauthorizedException {
       _sessionValid = false;
-      _scheduleReconnect(const Duration(seconds: 3));
+      if (attemptId == _connectSeq) {
+        _scheduleReconnect(const Duration(seconds: 3));
+      }
+    } on WebSocketException catch (e) {
+      _webSocket = null;
+      if (e.message.contains('401') || e.message.contains('Unauthorized')) {
+        _sessionValid = false;
+      }
+      if (attemptId == _connectSeq) {
+        _scheduleReconnect(const Duration(seconds: 3));
+      }
     } catch (_) {
       _webSocket = null;
-      _scheduleReconnect(const Duration(seconds: 3));
+      if (attemptId == _connectSeq) {
+        _scheduleReconnect(const Duration(seconds: 3));
+      }
     }
   }
 
