@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wear_tracking_flutter/models/traccar_models.dart';
@@ -6,6 +7,7 @@ import 'package:wear_tracking_flutter/screens/login_screen.dart';
 import 'package:wear_tracking_flutter/screens/settings_screen.dart';
 import 'package:wear_tracking_flutter/services/traccar_service.dart';
 import 'package:wear_tracking_flutter/utils/formatters.dart';
+import 'package:wear_tracking_flutter/utils/marker_interpolation.dart';
 
 void main() {
   test('compassDirection maps courses accurately', () {
@@ -81,5 +83,66 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
+  });
+
+  test('interpolateLatLng preserves exact endpoints and handles antimeridian', () {
+    const start = LatLng(45.4642, 9.1900);
+    const end = LatLng(45.4742, 9.2100);
+    expect(interpolateLatLng(0.0, start, end), start);
+    expect(interpolateLatLng(1.0, start, end), end);
+
+    final mid = interpolateLatLng(0.5, start, end);
+    expect(mid.latitude, closeTo(45.4692, 1e-9));
+    expect(mid.longitude, closeTo(9.2000, 1e-9));
+
+    const antiA = LatLng(10.0, 179.9);
+    const antiB = LatLng(10.0, -179.9);
+    final antiMid = interpolateLatLng(0.5, antiA, antiB);
+    expect(antiMid.longitude.abs(), closeTo(180.0, 1e-9));
+  });
+
+  test('interpolateRotation takes shortest angular path', () {
+    expect(interpolateRotation(0.5, 350.0, 10.0), closeTo(0.0, 1e-9));
+    expect(interpolateRotation(0.5, 10.0, 350.0), closeTo(0.0, 1e-9));
+    expect(interpolateRotation(0.0, 350.0, 10.0), closeTo(350.0, 1e-9));
+    expect(interpolateRotation(1.0, 350.0, 10.0), closeTo(10.0, 1e-9));
+  });
+
+  test('adaptive interval smoothing clamps bounds and ignores idle gaps', () {
+    final first = updateSmoothedIntervalMs(
+      currentSmoothedMs: null,
+      observedDeltaMs: 2000,
+    );
+    expect(first, 2000.0);
+
+    final second = updateSmoothedIntervalMs(
+      currentSmoothedMs: first,
+      observedDeltaMs: 3000,
+    );
+    expect(second, closeTo(2350.0, 1e-6));
+    expect(durationMsFromSmoothedInterval(second), 2468);
+
+    // Idle gaps (> 12000 ms) must not skew the smoothed interval.
+    final afterIdle = updateSmoothedIntervalMs(
+      currentSmoothedMs: second,
+      observedDeltaMs: 60000,
+    );
+    expect(afterIdle, second);
+
+    // Sub-second bursts are clamped at minimum 800 ms, very slow at 4500 ms.
+    final clampedLow = updateSmoothedIntervalMs(
+      currentSmoothedMs: null,
+      observedDeltaMs: 300,
+    );
+    expect(clampedLow, kMinMarkerAnimDurationMs.toDouble());
+    expect(durationMsFromSmoothedInterval(6000.0), kMaxMarkerAnimDurationMs);
+  });
+
+  test('shouldSnapToPosition snaps only large GPS jumps (> 500 m)', () {
+    const origin = LatLng(45.4642, 9.1900);
+    const shortHop = LatLng(45.4650, 9.1900); // ~89 m
+    const longJump = LatLng(45.4742, 9.1900); // ~1.11 km
+    expect(shouldSnapToPosition(origin, shortHop), isFalse);
+    expect(shouldSnapToPosition(origin, longJump), isTrue);
   });
 }

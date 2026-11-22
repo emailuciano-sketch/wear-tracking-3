@@ -13,6 +13,7 @@ import '../services/traccar_service.dart';
 import '../utils/formatters.dart';
 import '../utils/fullscreen_helper.dart';
 import '../utils/map_links.dart';
+import '../utils/marker_interpolation.dart';
 import 'about_screen.dart';
 import 'device_info_screen.dart';
 import 'devices_screen.dart';
@@ -28,6 +29,10 @@ class _MarkerTweenState {
   double endRot;
   double currentRot;
   int startMs;
+  int durationMs;
+  int lastUpdateMs;
+  int? lastFixTimeMs;
+  double? smoothedIntervalMs;
   bool animating;
   String suffix;
   BitmapDescriptor icon;
@@ -35,6 +40,8 @@ class _MarkerTweenState {
   _MarkerTweenState({
     required this.currentPos,
     required this.currentRot,
+    required this.lastUpdateMs,
+    this.lastFixTimeMs,
     required this.suffix,
     required this.icon,
   })  : startPos = currentPos,
@@ -42,6 +49,8 @@ class _MarkerTweenState {
         startRot = currentRot,
         endRot = currentRot,
         startMs = 0,
+        durationMs = kDefaultMarkerAnimDurationMs,
+        smoothedIntervalMs = null,
         animating = false;
 }
 
@@ -58,6 +67,7 @@ class _MapScreenState extends State<MapScreen>
   final TraccarService _service = TraccarService.instance;
 
   final Map<int, _MarkerTweenState> _markerStates = <int, _MarkerTweenState>{};
+  final ValueNotifier<int> _mapRenderVersion = ValueNotifier<int>(0);
   late final Ticker _ticker;
   Timer? _uiTickTimer;
   Timer? _myLocTimer;
@@ -71,8 +81,11 @@ class _MapScreenState extends State<MapScreen>
   bool _locationPermissionGranted = false;
   double _currentZoom = 14.0;
   int _pauseAutoFollowUntilMs = 0;
+  int _lastAnimPaintMs = 0;
   Position? _myLocation;
   Orientation? _lastOrientation;
+
+  void _notifyMapMarkersChanged() => _mapRenderVersion.value++;
 
   @override
   void initState() {
@@ -134,6 +147,7 @@ class _MapScreenState extends State<MapScreen>
     _uiTickTimer?.cancel();
     _myLocTimer?.cancel();
     _liveSub?.cancel();
+    _mapRenderVersion.dispose();
     _service.stopRealtimeSync();
     WakelockPlus.disable();
     super.dispose();
@@ -215,6 +229,8 @@ class _MapScreenState extends State<MapScreen>
         _markerStates[deviceId] = _MarkerTweenState(
           currentPos: location,
           currentRot: course,
+          lastUpdateMs: nowMs,
+          lastFixTimeMs: pos.fixTime?.millisecondsSinceEpoch,
           suffix: suffix,
           icon: icon,
         );
@@ -238,13 +254,49 @@ class _MapScreenState extends State<MapScreen>
                 (existing.endPos.longitude - location.longitude).abs() > 1e-6 ||
                 (existing.endRot - course).abs() > 0.5;
         if (moved) {
-          existing.startPos = existing.currentPos;
-          existing.endPos = location;
-          existing.startRot = existing.currentRot;
-          existing.endRot = course;
-          existing.startMs = nowMs;
-          existing.animating = true;
-          needsTicker = true;
+          final fixMs = pos.fixTime?.millisecondsSinceEpoch;
+          if (shouldSnapToPosition(existing.currentPos, location)) {
+            existing.startPos = location;
+            existing.endPos = location;
+            existing.currentPos = location;
+            existing.startRot = course;
+            existing.endRot = course;
+            existing.currentRot = course;
+            existing.animating = false;
+            existing.smoothedIntervalMs = null;
+            existing.durationMs = kDefaultMarkerAnimDurationMs;
+            existing.lastUpdateMs = nowMs;
+            existing.lastFixTimeMs = fixMs;
+            if (_track &&
+                _selectedDeviceId == deviceId &&
+                nowMs >= _pauseAutoFollowUntilMs) {
+              _moveCameraToDevice(deviceId);
+            }
+          } else {
+            final arrivalDeltaMs = nowMs - existing.lastUpdateMs;
+            final fixDeltaMs =
+                (fixMs != null && existing.lastFixTimeMs != null)
+                    ? (fixMs - existing.lastFixTimeMs!)
+                    : 0;
+            final observedDeltaMs = arrivalDeltaMs >= 400
+                ? arrivalDeltaMs
+                : (fixDeltaMs > 0 ? fixDeltaMs : arrivalDeltaMs);
+            existing.smoothedIntervalMs = updateSmoothedIntervalMs(
+              currentSmoothedMs: existing.smoothedIntervalMs,
+              observedDeltaMs: observedDeltaMs,
+            );
+            existing.durationMs =
+                durationMsFromSmoothedInterval(existing.smoothedIntervalMs!);
+            existing.startPos = existing.currentPos;
+            existing.endPos = location;
+            existing.startRot = existing.currentRot;
+            existing.endRot = course;
+            existing.startMs = nowMs;
+            existing.lastUpdateMs = nowMs;
+            existing.lastFixTimeMs = fixMs;
+            existing.animating = true;
+            needsTicker = true;
+          }
         } else if (!existing.animating &&
             _track &&
             _selectedDeviceId == deviceId &&
@@ -267,6 +319,7 @@ class _MapScreenState extends State<MapScreen>
     }
 
     if (mounted) {
+      _notifyMapMarkersChanged();
       setState(() {});
     }
   }
@@ -292,24 +345,51 @@ class _MapScreenState extends State<MapScreen>
       }
     }
     if (updated && mounted) {
-      setState(() {});
+      _notifyMapMarkersChanged();
     }
   }
 
   void _onAnimTick(Duration _) {
     if (!mounted) return;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    var anyActive = false;
+    var hasAnimating = false;
+    var anyFinishing = false;
 
+    for (final state in _markerStates.values) {
+      if (!state.animating) continue;
+      hasAnimating = true;
+      final duration =
+          state.durationMs > 0 ? state.durationMs : kDefaultMarkerAnimDurationMs;
+      if (nowMs - state.startMs >= duration) {
+        anyFinishing = true;
+        break;
+      }
+    }
+
+    if (!hasAnimating) {
+      if (_ticker.isActive) {
+        _ticker.stop();
+      }
+      return;
+    }
+
+    if (!anyFinishing && (nowMs - _lastAnimPaintMs) < kMarkerAnimFrameIntervalMs) {
+      return;
+    }
+    _lastAnimPaintMs = nowMs;
+
+    var anyActive = false;
     for (final entry in _markerStates.entries) {
       final deviceId = entry.key;
       final state = entry.value;
       if (!state.animating) continue;
 
+      final duration =
+          state.durationMs > 0 ? state.durationMs : kDefaultMarkerAnimDurationMs;
       final elapsed = nowMs - state.startMs;
-      final t = (elapsed / 1000.0).clamp(0.0, 1.0);
-      final newPos = _interpolateLatLng(t, state.startPos, state.endPos);
-      final newRot = _computeRotation(t, state.startRot, state.endRot);
+      final t = (elapsed / duration).clamp(0.0, 1.0);
+      final newPos = interpolateLatLng(t, state.startPos, state.endPos);
+      final newRot = interpolateRotation(t, state.startRot, state.endRot);
 
       state.currentPos = newPos;
       state.currentRot = newRot;
@@ -339,26 +419,7 @@ class _MapScreenState extends State<MapScreen>
     if (!anyActive && _ticker.isActive) {
       _ticker.stop();
     }
-    setState(() {});
-  }
-
-  LatLng _interpolateLatLng(double fraction, LatLng a, LatLng b) {
-    final lat = (b.latitude - a.latitude) * fraction + a.latitude;
-    var lngDelta = b.longitude - a.longitude;
-    if (lngDelta.abs() > 180) {
-      lngDelta -= lngDelta.sign * 360;
-    }
-    final lng = lngDelta * fraction + a.longitude;
-    return LatLng(lat, lng);
-  }
-
-  double _computeRotation(double fraction, double start, double end) {
-    final normalizeEnd = end - start;
-    final normalizedEndAbs = (normalizeEnd + 360) % 360;
-    final direction = normalizedEndAbs > 180 ? -1 : 1;
-    final rotation =
-        direction > 0 ? normalizedEndAbs : normalizedEndAbs - 360;
-    return (fraction * rotation + start + 360) % 360;
+    _notifyMapMarkersChanged();
   }
 
   Future<void> _moveCameraToDevice(
@@ -637,34 +698,37 @@ class _MapScreenState extends State<MapScreen>
                     DateTime.now().millisecondsSinceEpoch + 2500;
               }
             },
-            child: GoogleMap(
-              initialCameraPosition: CameraPosition(
-                target: initialTarget,
-                zoom: initialZoom,
+            child: ValueListenableBuilder<int>(
+              valueListenable: _mapRenderVersion,
+              builder: (_, _, _) => GoogleMap(
+                initialCameraPosition: CameraPosition(
+                  target: initialTarget,
+                  zoom: initialZoom,
+                ),
+                mapType:
+                    _service.satelliteView ? MapType.hybrid : MapType.normal,
+                minMaxZoomPreference: const MinMaxZoomPreference(null, 18),
+                zoomControlsEnabled: false,
+                compassEnabled: false,
+                mapToolbarEnabled: false,
+                myLocationEnabled: _locationPermissionGranted,
+                myLocationButtonEnabled: false,
+                markers: _buildVisibleMarkers(),
+                onCameraMove: (pos) {
+                  _currentZoom = pos.zoom;
+                },
+                onTap: (_) {
+                  if (_isMenuOpen) {
+                    setState(() => _isMenuOpen = false);
+                  } else if (_showBottomSheet) {
+                    setState(() => _showBottomSheet = false);
+                  }
+                },
+                onMapCreated: (controller) {
+                  _mapController = controller;
+                  _syncMarkersFromService();
+                },
               ),
-              mapType:
-                  _service.satelliteView ? MapType.hybrid : MapType.normal,
-              minMaxZoomPreference: const MinMaxZoomPreference(null, 18),
-              zoomControlsEnabled: false,
-              compassEnabled: false,
-              mapToolbarEnabled: false,
-              myLocationEnabled: _locationPermissionGranted,
-              myLocationButtonEnabled: false,
-              markers: _buildVisibleMarkers(),
-              onCameraMove: (pos) {
-                _currentZoom = pos.zoom;
-              },
-              onTap: (_) {
-                if (_isMenuOpen) {
-                  setState(() => _isMenuOpen = false);
-                } else if (_showBottomSheet) {
-                  setState(() => _showBottomSheet = false);
-                }
-              },
-              onMapCreated: (controller) {
-                _mapController = controller;
-                _syncMarkersFromService();
-              },
             ),
           ),
 
