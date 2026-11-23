@@ -41,14 +41,6 @@ class _LoginScreenState extends State<LoginScreen> {
       _passwordController.text.isNotEmpty &&
       !_isLoading;
 
-  Future<void> _showServerDialog() async {
-    final service = TraccarService.instance;
-    await showDialog<String>(
-      context: context,
-      builder: (_) => _ServerSettingsDialog(initialUrl: service.serverUrl),
-    );
-  }
-
   Future<void> _performLogin() async {
     if (!_canLogin) return;
     setState(() => _isLoading = true);
@@ -99,7 +91,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'Wear-Tracking 3',
+                    'Wear-Tracking 4',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 22,
@@ -166,96 +158,12 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  TextButton.icon(
-                    onPressed: _showServerDialog,
-                    icon: const Icon(Icons.settings),
-                    label: const Text('Server Settings'),
-                  ),
                 ],
               ),
             ),
           ),
         ),
       ),
-    );
-  }
-}
-
-class _ServerSettingsDialog extends StatefulWidget {
-  final String initialUrl;
-
-  const _ServerSettingsDialog({required this.initialUrl});
-
-  @override
-  State<_ServerSettingsDialog> createState() => _ServerSettingsDialogState();
-}
-
-class _ServerSettingsDialogState extends State<_ServerSettingsDialog> {
-  late final TextEditingController _urlCtrl;
-  String? _errorText;
-  bool _saving = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _urlCtrl = TextEditingController(text: widget.initialUrl);
-  }
-
-  @override
-  void dispose() {
-    _urlCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _onSave() async {
-    if (_saving) return;
-    final raw = _urlCtrl.text.trim();
-    final uri = Uri.tryParse(raw);
-    if (uri == null ||
-        (!uri.isScheme('http') && !uri.isScheme('https')) ||
-        uri.host.isEmpty) {
-      setState(() => _errorText = 'URL server non valido');
-      return;
-    }
-    setState(() {
-      _saving = true;
-      _errorText = null;
-    });
-    await TraccarService.instance.setServerUrl(raw);
-    if (!mounted) return;
-    Navigator.of(context).pop(raw);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Server Settings'),
-      content: TextField(
-        controller: _urlCtrl,
-        keyboardType: TextInputType.url,
-        decoration: InputDecoration(
-          labelText: 'Server URL',
-          hintText: 'https://pedinatore.com',
-          errorText: _errorText,
-        ),
-        onChanged: (_) {
-          if (_errorText != null) {
-            setState(() => _errorText = null);
-          }
-        },
-        onSubmitted: (_) => _onSave(),
-      ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: _saving ? null : () => Navigator.of(context).pop(),
-          child: const Text('Annulla'),
-        ),
-        TextButton(
-          onPressed: _saving ? null : _onSave,
-          child: const Text('Salva'),
-        ),
-      ],
     );
   }
 }

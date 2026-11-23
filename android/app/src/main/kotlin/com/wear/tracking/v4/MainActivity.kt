@@ -1,4 +1,4 @@
-package com.wear.tracking.v3
+package com.wear.tracking.v4
 
 import android.content.Context
 import android.content.res.Configuration
@@ -40,7 +40,7 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         EventChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            "com.wear.tracking.v3/network"
+            "com.wear.tracking.v4/network"
         ).setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 networkEventsSink = events

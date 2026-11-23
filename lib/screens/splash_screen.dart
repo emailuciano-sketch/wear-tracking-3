@@ -63,7 +63,7 @@ class _SplashScreenState extends State<SplashScreen> {
             height: 140,
             fit: BoxFit.contain,
             errorBuilder: (_, _, _) => const Text(
-              'Wear-Tracking 3',
+              'Wear-Tracking 4',
               style: TextStyle(
                 fontSize: 26,
                 fontWeight: FontWeight.bold,

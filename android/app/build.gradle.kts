@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.wear.tracking.v3"
+    namespace = "com.wear.tracking.v4"
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
@@ -15,7 +15,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.wear.tracking.v3"
+        applicationId = "com.wear.tracking.v4"
         minSdk = flutter.minSdkVersion
         targetSdk = 35
         versionCode = flutter.versionCode

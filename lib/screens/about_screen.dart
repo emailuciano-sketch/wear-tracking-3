@@ -17,7 +17,7 @@ class AboutScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             const Text(
-              'Wear-Tracking 3',
+              'Wear-Tracking 4',
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 16),
@@ -36,7 +36,7 @@ class AboutScreen extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Wear-Tracking 3 Flutter Edition (Android / iOS)',
+              'Wear-Tracking 4 Flutter Edition (Android / iOS)',
               style: TextStyle(fontSize: 15, color: Colors.black54),
             ),
           ],

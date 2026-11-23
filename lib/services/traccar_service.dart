@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/traccar_models.dart';
+import '../utils/motion_state.dart';
 
 class UnauthorizedException implements Exception {
   final String message;
@@ -22,7 +23,6 @@ class TraccarService extends ChangeNotifier {
 
   static const String defaultServerUrl = 'https://pedinatore.com';
   static const String prefAuthenticated = 'authenticated';
-  static const String prefUrl = 'url';
   static const String prefEmail = 'email';
   static const String prefPassword = 'password';
   static const String prefMarkerLabel = 'marker_label';
@@ -35,6 +35,8 @@ class TraccarService extends ChangeNotifier {
   TraccarUser? currentUser;
   final Map<int, TraccarDevice> devices = <int, TraccarDevice>{};
   final Map<int, TraccarPosition> positions = <int, TraccarPosition>{};
+  final Map<int, DateTime> _positionObservedAt = <int, DateTime>{};
+  final DeviceMotionTracker motionTracker = DeviceMotionTracker();
 
   bool _sessionValid = false;
   bool _isSyncActive = false;
@@ -51,7 +53,7 @@ class TraccarService extends ChangeNotifier {
   int _connectSeq = 0;
 
   static const EventChannel _androidNetworkChannel =
-      EventChannel('com.wear.tracking.v3/network');
+      EventChannel('com.wear.tracking.v4/network');
 
   final StreamController<void> _updateController =
       StreamController<void>.broadcast();
@@ -59,9 +61,6 @@ class TraccarService extends ChangeNotifier {
 
   Future<void> init() async {
     _prefs ??= await SharedPreferences.getInstance();
-    if (!_prefs!.containsKey(prefUrl)) {
-      await _prefs!.setString(prefUrl, defaultServerUrl);
-    }
     if (!_prefs!.containsKey(prefMarkerLabel)) {
       await _prefs!.setBool(prefMarkerLabel, false);
     }
@@ -78,22 +77,7 @@ class TraccarService extends ChangeNotifier {
     return client;
   }
 
-  String get serverUrl {
-    final raw = _prefs?.getString(prefUrl)?.trim() ?? defaultServerUrl;
-    if (raw.isEmpty) return defaultServerUrl;
-    return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
-  }
-
-  Future<void> setServerUrl(String value) async {
-    final normalized = value.trim();
-    await _prefs?.setString(
-      prefUrl,
-      normalized.endsWith('/')
-          ? normalized.substring(0, normalized.length - 1)
-          : normalized,
-    );
-    resetSession();
-  }
+  String get serverUrl => defaultServerUrl;
 
   String get email => _prefs?.getString(prefEmail) ?? '';
   String get password => _prefs?.getString(prefPassword) ?? '';
@@ -245,6 +229,36 @@ class TraccarService extends ChangeNotifier {
     return list;
   }
 
+  bool ingestPosition(
+    TraccarPosition pos, {
+    bool authoritative = false,
+    DateTime? observedAt,
+  }) {
+    final now = observedAt ?? DateTime.now();
+    motionTracker.recordPosition(pos, observedAt: now);
+    final current = positions[pos.deviceId];
+    if (shouldAcceptAsLatestPosition(
+      current,
+      pos,
+      authoritative: authoritative,
+      currentObservedAt: _positionObservedAt[pos.deviceId],
+      now: now,
+    )) {
+      positions[pos.deviceId] = pos;
+      _positionObservedAt[pos.deviceId] = now;
+      return true;
+    }
+    return false;
+  }
+
+  MotionSnapshot motionFor(
+    int deviceId,
+    TraccarPosition? position, {
+    DateTime? now,
+  }) {
+    return motionTracker.evaluate(deviceId, position, now: now);
+  }
+
   Future<List<TraccarPosition>> getLastPositions() async {
     final decoded = await _authorizedGetJson('/api/positions');
     if (decoded is! List) return <TraccarPosition>[];
@@ -254,7 +268,7 @@ class TraccarService extends ChangeNotifier {
         final pos = TraccarPosition.fromJson(
           Map<String, dynamic>.from(item),
         );
-        positions[pos.deviceId] = pos;
+        ingestPosition(pos, authoritative: true);
         list.add(pos);
       }
     }
@@ -584,12 +598,24 @@ class TraccarService extends ChangeNotifier {
 
       final rawPositions = decoded['positions'];
       if (rawPositions is List) {
+        final parsedPositions = <TraccarPosition>[];
         for (final item in rawPositions) {
           if (item is Map) {
-            final pos =
-                TraccarPosition.fromJson(Map<String, dynamic>.from(item));
-            positions[pos.deviceId] = pos;
+            parsedPositions.add(
+              TraccarPosition.fromJson(Map<String, dynamic>.from(item)),
+            );
           }
+        }
+        parsedPositions.sort((a, b) {
+          final ta = a.fixTime;
+          final tb = b.fixTime;
+          if (ta == null && tb == null) return 0;
+          if (ta == null) return 1;
+          if (tb == null) return -1;
+          return ta.compareTo(tb);
+        });
+        for (final pos in parsedPositions) {
+          ingestPosition(pos);
         }
       }
       _emitLiveUpdate();
@@ -612,6 +638,8 @@ class TraccarService extends ChangeNotifier {
     resetSession();
     devices.clear();
     positions.clear();
+    _positionObservedAt.clear();
+    motionTracker.clear();
     evictConnections();
   }
 }

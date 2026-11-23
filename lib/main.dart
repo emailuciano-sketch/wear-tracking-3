@@ -23,7 +23,7 @@ class WearTrackingApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Wear-Tracking 3',
+      title: 'Wear-Tracking 4',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: false,

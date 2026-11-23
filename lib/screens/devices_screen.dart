@@ -25,9 +25,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
   final TextEditingController _searchController = TextEditingController();
   bool _isSearching = false;
   bool _isLoading = true;
+  bool _isRefreshing = false;
   String? _error;
   String _query = '';
   Timer? _refreshTimer;
+  Timer? _tickTimer;
+  StreamSubscription<void>? _liveSub;
 
   @override
   void initState() {
@@ -37,16 +40,29 @@ class _DevicesScreenState extends State<DevicesScreen> {
       const Duration(seconds: 5),
       (_) => _loadData(silent: true),
     );
+    _tickTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) {
+        if (mounted) setState(() {});
+      },
+    );
+    _liveSub = TraccarService.instance.onLiveUpdate.listen((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _tickTimer?.cancel();
     _refreshTimer?.cancel();
+    _liveSub?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   Future<void> _loadData({bool silent = false}) async {
+    if (_isRefreshing) return;
+    _isRefreshing = true;
     final service = TraccarService.instance;
     if (!silent && mounted) {
       setState(() {
@@ -65,6 +81,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         _error = e.toString();
       }
     } finally {
+      _isRefreshing = false;
       if (mounted) {
         setState(() {
           if (!silent) _isLoading = false;
@@ -189,10 +206,12 @@ class _DevicesScreenState extends State<DevicesScreen> {
               itemBuilder: (context, index) {
                 final device = filtered[index];
                 final pos = service.positions[device.id];
-                final suffix = markerSuffixFor(device, pos);
+                final motion = service.motionFor(device.id, pos);
+                final suffix = markerSuffixFor(device, pos, motion: motion);
                 final isSelected = widget.selectedDeviceId != 0 &&
                     device.id == widget.selectedDeviceId;
-                final statusText = buildDeviceStatusLabel(device, pos);
+                final statusText =
+                    buildDeviceStatusLabel(device, pos, motion: motion);
 
                 return InkWell(
                   onTap: () {

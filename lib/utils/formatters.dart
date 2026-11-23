@@ -1,26 +1,48 @@
 import 'package:intl/intl.dart';
 import '../models/traccar_models.dart';
+import 'motion_state.dart';
 
 const double kKnotsToKmh = 1.852;
 
+/// Overridable clock source for deterministic unit and widget tests.
+DateTime Function() currentClock = DateTime.now;
+
 double knotsToKmh(double knots) => knots * kKnotsToKmh;
 
-int minutesSinceFix(DateTime? fixTime) {
+int minutesSinceFix(DateTime? fixTime, {DateTime? now}) {
   if (fixTime == null) return 0;
-  final diff = DateTime.now().difference(fixTime.toLocal());
+  final ref = now ?? currentClock();
+  final diff = ref.difference(fixTime.toLocal());
   return diff.inMinutes < 0 ? 0 : diff.inMinutes;
 }
 
-bool isDeviceMoving(TraccarDevice? device, TraccarPosition? position) {
-  if (device == null || position == null) return false;
-  final speedKmh = knotsToKmh(position.speed);
-  final min = minutesSinceFix(position.fixTime);
-  return device.status == 'online' && speedKmh >= 3.0 && min <= 1;
+bool isDeviceMoving(
+  TraccarDevice? device,
+  TraccarPosition? position, {
+  MotionSnapshot? motion,
+  DateTime? now,
+}) {
+  if (device == null || position == null || device.status != 'online') {
+    return false;
+  }
+  final effectiveSpeedKmh =
+      motion?.effectiveSpeedKmh ?? knotsToKmh(position.speed);
+  final maxMin = motion?.maxFreshFixMinutes ?? kNormalFixFreshMinutes;
+  final min = minutesSinceFix(position.fixTime, now: now);
+  if (min > maxMin) return false;
+  return effectiveSpeedKmh >= kMovingSpeedThresholdKmh ||
+      (motion?.inHighSpeedGrace ?? false);
 }
 
-String markerSuffixFor(TraccarDevice? device, TraccarPosition? position) {
+String markerSuffixFor(
+  TraccarDevice? device,
+  TraccarPosition? position, {
+  MotionSnapshot? motion,
+  DateTime? now,
+}) {
   if (device == null) return 'static';
-  if (position != null && isDeviceMoving(device, position)) {
+  if (position != null &&
+      isDeviceMoving(device, position, motion: motion, now: now)) {
     return 'online';
   }
   if (device.status == 'online' || device.status == 'unknown') {
@@ -29,9 +51,10 @@ String markerSuffixFor(TraccarDevice? device, TraccarPosition? position) {
   return 'offline';
 }
 
-String formatTimeDiff(DateTime? fixTime) {
+String formatTimeDiff(DateTime? fixTime, {DateTime? now}) {
   if (fixTime == null) return '0min 0sec';
-  final diff = DateTime.now().difference(fixTime.toLocal());
+  final ref = now ?? currentClock();
+  final diff = ref.difference(fixTime.toLocal());
   final totalSeconds = diff.inSeconds < 0 ? 0 : diff.inSeconds;
   final days = totalSeconds ~/ 86400;
   final hours = (totalSeconds % 86400) ~/ 3600;
@@ -46,17 +69,21 @@ String formatTimeDiff(DateTime? fixTime) {
   return '${days}days ${hours}hr ${mins}min ${secs}sec';
 }
 
-String buildDeviceStatusLabel(TraccarDevice device, TraccarPosition? position) {
-  final speedKmh = position != null ? knotsToKmh(position.speed) : 0.0;
-  final min = minutesSinceFix(position?.fixTime);
-  final diff = formatTimeDiff(position?.fixTime);
+String buildDeviceStatusLabel(
+  TraccarDevice device,
+  TraccarPosition? position, {
+  MotionSnapshot? motion,
+  DateTime? now,
+}) {
+  final diff = formatTimeDiff(position?.fixTime ?? device.lastUpdate, now: now);
 
-  if (device.status == 'online' && speedKmh < 3.0) {
+  if (device.status == 'online') {
+    if (isDeviceMoving(device, position, motion: motion, now: now)) {
+      final speed = motion?.displaySpeedKmh ??
+          (position != null ? knotsToKmh(position.speed) : 0.0);
+      return 'Moving ${speed.toStringAsFixed(1)} km/h';
+    }
     return 'Static $diff';
-  } else if (device.status == 'online' && min > 1) {
-    return 'Static $diff';
-  } else if (device.status == 'online' && min <= 1) {
-    return 'Moving ${speedKmh.toStringAsFixed(1)} km/h';
   } else if (device.status == 'unknown') {
     return 'Unknown $diff';
   }

@@ -2,11 +2,8 @@ import 'dart:math' as math;
 
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
-const int kDefaultMarkerAnimDurationMs = 1500;
-const int kMinMarkerAnimDurationMs = 800;
-const int kMaxMarkerAnimDurationMs = 4500;
-const int kMaxValidIntervalDeltaMs = 12000;
-const double kSnapJumpDistanceMeters = 500.0;
+const int kMarkerAnimDurationMs = 750;
+const double kSnapJumpDistanceMeters = 250.0;
 const int kMarkerAnimFrameIntervalMs = 33;
 
 const double _kEarthRadiusMeters = 6371000.0;
@@ -28,28 +25,19 @@ double haversineDistanceMeters(LatLng a, LatLng b) {
 bool shouldSnapToPosition(LatLng a, LatLng b) =>
     haversineDistanceMeters(a, b) > kSnapJumpDistanceMeters;
 
-double updateSmoothedIntervalMs({
-  required double? currentSmoothedMs,
-  required int observedDeltaMs,
-}) {
-  if (observedDeltaMs <= 0 || observedDeltaMs > kMaxValidIntervalDeltaMs) {
-    return currentSmoothedMs ?? kDefaultMarkerAnimDurationMs.toDouble();
-  }
-  if (currentSmoothedMs == null) {
-    return observedDeltaMs
-        .clamp(kMinMarkerAnimDurationMs, kMaxMarkerAnimDurationMs)
-        .toDouble();
-  }
-  return (currentSmoothedMs * 0.65 + observedDeltaMs * 0.35).clamp(
-    kMinMarkerAnimDurationMs.toDouble(),
-    kMaxMarkerAnimDurationMs.toDouble(),
-  );
-}
+/// Forward azimuth in degrees [0, 360) from [from] to [to].
+double bearingDegrees(LatLng from, LatLng to) {
+  final lat1 = from.latitude * math.pi / 180.0;
+  final lat2 = to.latitude * math.pi / 180.0;
+  final dLon = (to.longitude - from.longitude) * math.pi / 180.0;
 
-int durationMsFromSmoothedInterval(double smoothedMs) =>
-    (smoothedMs * 1.05)
-        .round()
-        .clamp(kMinMarkerAnimDurationMs, kMaxMarkerAnimDurationMs);
+  final y = math.sin(dLon) * math.cos(lat2);
+  final x = math.cos(lat1) * math.sin(lat2) -
+      math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
+  final rawDeg = math.atan2(y, x) * 180.0 / math.pi;
+  final normalized = _normalizeAngle360(rawDeg);
+  return normalized >= 360.0 ? 0.0 : normalized;
+}
 
 LatLng interpolateLatLng(double fraction, LatLng a, LatLng b) {
   if (fraction <= 0.0) return a;

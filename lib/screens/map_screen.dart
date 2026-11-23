@@ -14,6 +14,7 @@ import '../utils/formatters.dart';
 import '../utils/fullscreen_helper.dart';
 import '../utils/map_links.dart';
 import '../utils/marker_interpolation.dart';
+import '../utils/motion_state.dart';
 import 'about_screen.dart';
 import 'device_info_screen.dart';
 import 'devices_screen.dart';
@@ -29,10 +30,6 @@ class _MarkerTweenState {
   double endRot;
   double currentRot;
   int startMs;
-  int durationMs;
-  int lastUpdateMs;
-  int? lastFixTimeMs;
-  double? smoothedIntervalMs;
   bool animating;
   String suffix;
   BitmapDescriptor icon;
@@ -40,8 +37,6 @@ class _MarkerTweenState {
   _MarkerTweenState({
     required this.currentPos,
     required this.currentRot,
-    required this.lastUpdateMs,
-    this.lastFixTimeMs,
     required this.suffix,
     required this.icon,
   })  : startPos = currentPos,
@@ -49,8 +44,6 @@ class _MarkerTweenState {
         startRot = currentRot,
         endRot = currentRot,
         startMs = 0,
-        durationMs = kDefaultMarkerAnimDurationMs,
-        smoothedIntervalMs = null,
         animating = false;
 }
 
@@ -68,6 +61,7 @@ class _MapScreenState extends State<MapScreen>
 
   final Map<int, _MarkerTweenState> _markerStates = <int, _MarkerTweenState>{};
   final ValueNotifier<int> _mapRenderVersion = ValueNotifier<int>(0);
+  final ValueNotifier<int> _clockTick = ValueNotifier<int>(0);
   late final Ticker _ticker;
   Timer? _uiTickTimer;
   Timer? _myLocTimer;
@@ -87,6 +81,17 @@ class _MapScreenState extends State<MapScreen>
 
   void _notifyMapMarkersChanged() => _mapRenderVersion.value++;
 
+  void _startUiTickTimer() {
+    _uiTickTimer?.cancel();
+    _uiTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      _refreshMarkerIconsIfSuffixChanged();
+      if (_selectedDeviceId != 0 && _showBottomSheet) {
+        _clockTick.value++;
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -101,16 +106,7 @@ class _MapScreenState extends State<MapScreen>
       _syncMarkersFromService();
     }
     _initLocationPermissionAndFetch();
-
-    _uiTickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      _refreshMarkerIconsIfSuffixChanged();
-      if (_selectedDeviceId != 0 &&
-          _showBottomSheet &&
-          _service.positions.containsKey(_selectedDeviceId)) {
-        setState(() {});
-      }
-    });
+    _startUiTickTimer();
 
     _myLocTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (_locationPermissionGranted) {
@@ -134,6 +130,8 @@ class _MapScreenState extends State<MapScreen>
     if (state == AppLifecycleState.resumed) {
       if (mounted) {
         FullscreenHelper.apply(MediaQuery.of(context).orientation);
+        _startUiTickTimer();
+        _clockTick.value++;
       }
       _service.startRealtimeSync();
       _service.fetchLatestPositions();
@@ -148,6 +146,7 @@ class _MapScreenState extends State<MapScreen>
     _myLocTimer?.cancel();
     _liveSub?.cancel();
     _mapRenderVersion.dispose();
+    _clockTick.dispose();
     _service.stopRealtimeSync();
     WakelockPlus.disable();
     super.dispose();
@@ -189,13 +188,26 @@ class _MapScreenState extends State<MapScreen>
   }
 
   double _resolveCourse(
+    int deviceId,
     TraccarPosition? position,
+    LatLng? previousPos,
     double? previousRotation,
   ) {
     final course = position?.course ?? 0.0;
-    final speedKmh = position != null ? knotsToKmh(position.speed) : 0.0;
-    if (previousRotation != null && speedKmh < 3.0 && course.abs() < 0.01) {
-      return previousRotation;
+    if (course.abs() < 0.01) {
+      if (position != null) {
+        final speedKmh =
+            _service.motionFor(deviceId, position).effectiveSpeedKmh;
+        if (speedKmh >= 3.0 && previousPos != null) {
+          final nextPos = LatLng(position.latitude, position.longitude);
+          if (haversineDistanceMeters(previousPos, nextPos) >= 5.0) {
+            return bearingDegrees(previousPos, nextPos);
+          }
+        }
+      }
+      if (previousRotation != null) {
+        return previousRotation;
+      }
     }
     return course;
   }
@@ -215,10 +227,12 @@ class _MapScreenState extends State<MapScreen>
         continue;
       }
 
-      final suffix = markerSuffixFor(device, pos);
+      final motion = _service.motionFor(deviceId, pos);
+      final suffix = markerSuffixFor(device, pos, motion: motion);
       final location = LatLng(pos.latitude, pos.longitude);
       final existing = _markerStates[deviceId];
-      final course = _resolveCourse(pos, existing?.currentRot);
+      final course =
+          _resolveCourse(deviceId, pos, existing?.endPos, existing?.currentRot);
 
       if (existing == null) {
         final icon = await MarkerIconCache.instance.getMarkerIcon(
@@ -229,8 +243,6 @@ class _MapScreenState extends State<MapScreen>
         _markerStates[deviceId] = _MarkerTweenState(
           currentPos: location,
           currentRot: course,
-          lastUpdateMs: nowMs,
-          lastFixTimeMs: pos.fixTime?.millisecondsSinceEpoch,
           suffix: suffix,
           icon: icon,
         );
@@ -254,7 +266,6 @@ class _MapScreenState extends State<MapScreen>
                 (existing.endPos.longitude - location.longitude).abs() > 1e-6 ||
                 (existing.endRot - course).abs() > 0.5;
         if (moved) {
-          final fixMs = pos.fixTime?.millisecondsSinceEpoch;
           if (shouldSnapToPosition(existing.currentPos, location)) {
             existing.startPos = location;
             existing.endPos = location;
@@ -263,37 +274,17 @@ class _MapScreenState extends State<MapScreen>
             existing.endRot = course;
             existing.currentRot = course;
             existing.animating = false;
-            existing.smoothedIntervalMs = null;
-            existing.durationMs = kDefaultMarkerAnimDurationMs;
-            existing.lastUpdateMs = nowMs;
-            existing.lastFixTimeMs = fixMs;
             if (_track &&
                 _selectedDeviceId == deviceId &&
                 nowMs >= _pauseAutoFollowUntilMs) {
               _moveCameraToDevice(deviceId);
             }
           } else {
-            final arrivalDeltaMs = nowMs - existing.lastUpdateMs;
-            final fixDeltaMs =
-                (fixMs != null && existing.lastFixTimeMs != null)
-                    ? (fixMs - existing.lastFixTimeMs!)
-                    : 0;
-            final observedDeltaMs = arrivalDeltaMs >= 400
-                ? arrivalDeltaMs
-                : (fixDeltaMs > 0 ? fixDeltaMs : arrivalDeltaMs);
-            existing.smoothedIntervalMs = updateSmoothedIntervalMs(
-              currentSmoothedMs: existing.smoothedIntervalMs,
-              observedDeltaMs: observedDeltaMs,
-            );
-            existing.durationMs =
-                durationMsFromSmoothedInterval(existing.smoothedIntervalMs!);
             existing.startPos = existing.currentPos;
             existing.endPos = location;
             existing.startRot = existing.currentRot;
             existing.endRot = course;
             existing.startMs = nowMs;
-            existing.lastUpdateMs = nowMs;
-            existing.lastFixTimeMs = fixMs;
             existing.animating = true;
             needsTicker = true;
           }
@@ -332,7 +323,8 @@ class _MapScreenState extends State<MapScreen>
       final device = _service.devices[deviceId];
       final pos = _service.positions[deviceId];
       if (device == null || pos == null) continue;
-      final nextSuffix = markerSuffixFor(device, pos);
+      final motion = _service.motionFor(deviceId, pos);
+      final nextSuffix = markerSuffixFor(device, pos, motion: motion);
       if (nextSuffix != state.suffix) {
         final icon = await MarkerIconCache.instance.getMarkerIcon(
           category: device.category,
@@ -358,9 +350,7 @@ class _MapScreenState extends State<MapScreen>
     for (final state in _markerStates.values) {
       if (!state.animating) continue;
       hasAnimating = true;
-      final duration =
-          state.durationMs > 0 ? state.durationMs : kDefaultMarkerAnimDurationMs;
-      if (nowMs - state.startMs >= duration) {
+      if (nowMs - state.startMs >= kMarkerAnimDurationMs) {
         anyFinishing = true;
         break;
       }
@@ -384,20 +374,21 @@ class _MapScreenState extends State<MapScreen>
       final state = entry.value;
       if (!state.animating) continue;
 
-      final duration =
-          state.durationMs > 0 ? state.durationMs : kDefaultMarkerAnimDurationMs;
       final elapsed = nowMs - state.startMs;
-      final t = (elapsed / duration).clamp(0.0, 1.0);
-      final newPos = interpolateLatLng(t, state.startPos, state.endPos);
-      final newRot = interpolateRotation(t, state.startRot, state.endRot);
-
-      state.currentPos = newPos;
-      state.currentRot = newRot;
+      final t = (elapsed / kMarkerAnimDurationMs).clamp(0.0, 1.0);
+      final LatLng newPos;
+      final double newRot;
       if (t >= 1.0) {
+        newPos = state.endPos;
+        newRot = state.endRot;
         state.animating = false;
       } else {
+        newPos = interpolateLatLng(t, state.startPos, state.endPos);
+        newRot = interpolateRotation(t, state.startRot, state.endRot);
         anyActive = true;
       }
+      state.currentPos = newPos;
+      state.currentRot = newRot;
 
       if (_track &&
           _selectedDeviceId == deviceId &&
@@ -432,7 +423,8 @@ class _MapScreenState extends State<MapScreen>
 
     final state = _markerStates[deviceId];
     final target = state?.currentPos ?? LatLng(pos.latitude, pos.longitude);
-    final bearing = _resolveCourse(pos, state?.currentRot);
+    final bearing =
+        _resolveCourse(deviceId, pos, state?.startPos, state?.currentRot);
     final targetZoom = zoomOverride ?? _currentZoom;
     _currentZoom = targetZoom;
 
@@ -676,9 +668,6 @@ class _MapScreenState extends State<MapScreen>
     final selectedDevice = _selectedDeviceId != 0
         ? _service.devices[_selectedDeviceId]
         : null;
-    final selectedPos = _selectedDeviceId != 0
-        ? _service.positions[_selectedDeviceId]
-        : null;
 
     final user = _service.currentUser;
     final initialTarget = (user != null && user.latitude != 0)
@@ -860,31 +849,46 @@ class _MapScreenState extends State<MapScreen>
                     setState(() => _showBottomSheet = false);
                   }
                 },
-                child: _DeviceBottomPanel(
-                  device: selectedDevice,
-                  position: selectedPos,
-                  onStreetView: () {
-                    if (selectedPos == null) return;
-                    MapLinks.openStreetView(
-                      context,
-                      latitude: selectedPos.latitude,
-                      longitude: selectedPos.longitude,
-                    );
-                  },
-                  onDirections: () {
-                    if (selectedPos == null) return;
-                    MapLinks.openDirections(
-                      context,
-                      latitude: selectedPos.latitude,
-                      longitude: selectedPos.longitude,
-                    );
-                  },
-                  onDeviceInfo: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) =>
-                            DeviceInfoScreen(deviceId: selectedDevice.id),
-                      ),
+                child: ValueListenableBuilder<int>(
+                  valueListenable: _clockTick,
+                  builder: (_, _, _) {
+                    final dev = _selectedDeviceId != 0
+                        ? _service.devices[_selectedDeviceId]
+                        : null;
+                    final pos = _selectedDeviceId != 0
+                        ? _service.positions[_selectedDeviceId]
+                        : null;
+                    if (dev == null) {
+                      return const SizedBox.shrink();
+                    }
+                    return _DeviceBottomPanel(
+                      device: dev,
+                      position: pos,
+                      motion:
+                          pos != null ? _service.motionFor(dev.id, pos) : null,
+                      onStreetView: () {
+                        if (pos == null) return;
+                        MapLinks.openStreetView(
+                          context,
+                          latitude: pos.latitude,
+                          longitude: pos.longitude,
+                        );
+                      },
+                      onDirections: () {
+                        if (pos == null) return;
+                        MapLinks.openDirections(
+                          context,
+                          latitude: pos.latitude,
+                          longitude: pos.longitude,
+                        );
+                      },
+                      onDeviceInfo: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => DeviceInfoScreen(deviceId: dev.id),
+                          ),
+                        );
+                      },
                     );
                   },
                 ),
@@ -951,6 +955,7 @@ class _DropdownMenuItem extends StatelessWidget {
 class _DeviceBottomPanel extends StatelessWidget {
   final TraccarDevice device;
   final TraccarPosition? position;
+  final MotionSnapshot? motion;
   final VoidCallback onStreetView;
   final VoidCallback onDirections;
   final VoidCallback onDeviceInfo;
@@ -958,6 +963,7 @@ class _DeviceBottomPanel extends StatelessWidget {
   const _DeviceBottomPanel({
     required this.device,
     required this.position,
+    required this.motion,
     required this.onStreetView,
     required this.onDirections,
     required this.onDeviceInfo,
@@ -966,13 +972,13 @@ class _DeviceBottomPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pos = position;
-    final moving = isDeviceMoving(device, pos);
+    final moving = isDeviceMoving(device, pos, motion: motion);
     final statusColor = moving
         ? const Color(0xFF00A82D)
         : (device.status == 'online' || device.status == 'unknown')
             ? Colors.amber.shade700
             : Colors.redAccent;
-    final statusText = buildDeviceStatusLabel(device, pos);
+    final statusText = buildDeviceStatusLabel(device, pos, motion: motion);
 
     return Material(
       color: Colors.white,

@@ -135,6 +135,7 @@ class TraccarPosition {
   final double altitude;
   final double speed; // in knots
   final double course;
+  final double accuracy;
   final String? protocol;
   final Map<String, dynamic> attributes;
   final Map<String, dynamic>? network;
@@ -150,6 +151,7 @@ class TraccarPosition {
     required this.altitude,
     required this.speed,
     required this.course,
+    this.accuracy = 0.0,
     this.protocol,
     required this.attributes,
     this.network,
@@ -168,6 +170,7 @@ class TraccarPosition {
       altitude: (json['altitude'] as num?)?.toDouble() ?? 0.0,
       speed: (json['speed'] as num?)?.toDouble() ?? 0.0,
       course: (json['course'] as num?)?.toDouble() ?? 0.0,
+      accuracy: (json['accuracy'] as num?)?.toDouble() ?? 0.0,
       protocol: json['protocol']?.toString(),
       attributes: json['attributes'] is Map
           ? Map<String, dynamic>.from(json['attributes'] as Map)

@@ -49,7 +49,7 @@ class _DeviceInfoScreenState extends State<DeviceInfoScreen> {
         final posList =
             await service.getPositionsById(dev.id, dev.positionId);
         if (posList.isNotEmpty) {
-          service.positions[dev.id] = posList.first;
+          service.ingestPosition(posList.first, authoritative: true);
         }
       } else {
         await service.getLastPositions();
