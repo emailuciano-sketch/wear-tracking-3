@@ -3,6 +3,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wear_tracking_flutter/models/traccar_models.dart';
+import 'package:wear_tracking_flutter/screens/device_info_screen.dart';
 import 'package:wear_tracking_flutter/screens/devices_screen.dart';
 import 'package:wear_tracking_flutter/screens/login_screen.dart';
 import 'package:wear_tracking_flutter/screens/settings_screen.dart';
@@ -677,6 +678,85 @@ void main() {
 
     expect(find.text('Static 10min 2sec'), findsOneWidget);
     expect(find.text('Offline 1hr 0min 2sec'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+  });
+
+  testWidgets('DeviceInfoScreen shows position.fixTime as Last Update and device.lastUpdate as Last Contact', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    final service = TraccarService.instance;
+    await service.init();
+    service.devices.clear();
+    service.positions.clear();
+    service.motionTracker.clear();
+
+    addTearDown(() {
+      service.devices.clear();
+      service.positions.clear();
+      service.motionTracker.clear();
+    });
+
+    final fixTime = DateTime(2026, 11, 25, 8, 47, 39);
+    final lastContact = DateTime(2026, 11, 25, 8, 58, 25);
+
+    service.devices[1] = TraccarDevice(
+      id: 1,
+      positionId: 10,
+      name: 'Tracker Singolo',
+      uniqueId: '111111111111111',
+      category: 'car',
+      status: 'online',
+      lastUpdate: lastContact,
+      model: 'EV-201G',
+      phone: null,
+    );
+    service.positions[1] = TraccarPosition(
+      id: 10,
+      deviceId: 1,
+      fixTime: fixTime,
+      outdated: false,
+      valid: true,
+      latitude: 45.5,
+      longitude: 11.5,
+      altitude: 30.0,
+      speed: 0.0,
+      course: 0.0,
+      protocol: 'minifinder2',
+      attributes: const <String, dynamic>{},
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(home: DeviceInfoScreen(deviceId: 1)),
+    );
+    await tester.pump();
+
+    final lastUpdateRow = find.ancestor(
+      of: find.text('Last Update'),
+      matching: find.byType(Row),
+    );
+    final lastContactRow = find.ancestor(
+      of: find.text('Last Contact'),
+      matching: find.byType(Row),
+    );
+
+    expect(lastUpdateRow, findsOneWidget);
+    expect(lastContactRow, findsOneWidget);
+    expect(
+      find.descendant(
+        of: lastUpdateRow,
+        matching: find.text(formatDateTime(fixTime)),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: lastContactRow,
+        matching: find.text(formatDateTime(lastContact)),
+      ),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox.shrink());

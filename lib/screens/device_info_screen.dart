@@ -170,6 +170,12 @@ class _DeviceInfoScreenState extends State<DeviceInfoScreen> {
                         _KeyValueRow(
                           label: 'Last Update',
                           value: formatDateTime(
+                            position?.fixTime ?? device?.lastUpdate,
+                          ),
+                        ),
+                        _KeyValueRow(
+                          label: 'Last Contact',
+                          value: formatDateTime(
                             device?.lastUpdate ?? position?.fixTime,
                           ),
                         ),

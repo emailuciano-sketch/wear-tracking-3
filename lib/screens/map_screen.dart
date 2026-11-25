@@ -1067,7 +1067,7 @@ class _DeviceBottomPanel extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               Text(
-                'Last Update : ${formatDateTime(pos?.fixTime)}',
+                'Last Update : ${formatDateTime(pos?.fixTime ?? device.lastUpdate)}',
                 style: const TextStyle(
                   fontSize: 11,
                   color: Color(0xFF808080),
